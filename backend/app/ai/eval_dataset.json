@@ -1,0 +1,64 @@
+[
+  {
+    "id": "eval-grounded-01",
+    "name": "Grounded Question & Citation Check",
+    "category": "grounding",
+    "query": "What is Third Normal Form (3NF) in database normalization?",
+    "expected_answer_keywords": ["transitive", "dependency", "non-prime", "superkey"],
+    "requires_unsupported_refusal": false,
+    "expected_citation_page": 2,
+    "expected_source_keyword": "DBMS"
+  },
+  {
+    "id": "eval-unsupported-01",
+    "name": "Unsupported Question Safe Refusal",
+    "category": "unsupported_handling",
+    "query": "What is the capital of France?",
+    "expected_refusal_phrase": "I couldn't find enough information about that in the current Project materials to answer reliably.",
+    "requires_unsupported_refusal": true,
+    "expected_citations_empty": true
+  },
+  {
+    "id": "eval-unsupported-02",
+    "name": "Out-of-Domain Scientific Query",
+    "category": "unsupported_handling",
+    "query": "What is the boiling point of ethanol at sea level?",
+    "expected_refusal_phrase": "I couldn't find enough information about that in the current Project materials to answer reliably.",
+    "requires_unsupported_refusal": true,
+    "expected_citations_empty": true
+  },
+  {
+    "id": "eval-citation-01",
+    "name": "Exact Citation & Range Query Verification",
+    "category": "citation_correctness",
+    "query": "How do B-Tree and B+ Tree indexes optimize range queries?",
+    "expected_answer_keywords": ["leaf", "linked list", "range queries", "log"],
+    "requires_unsupported_refusal": false,
+    "expected_citation_page": 12,
+    "expected_source_keyword": "DBMS"
+  },
+  {
+    "id": "eval-isolation-01",
+    "name": "Project Data Isolation Boundary",
+    "category": "project_isolation",
+    "query": "Explain kernel interrupt handlers in Operating Systems",
+    "requires_unsupported_refusal": true,
+    "expected_refusal_phrase": "I couldn't find enough information about that in the current Project materials to answer reliably."
+  },
+  {
+    "id": "eval-structured-01",
+    "name": "Structured Open-Ended Assessment Schema",
+    "category": "structured_output",
+    "target_schema": "OpenEndedEvaluation",
+    "expected_fields": [
+      "score",
+      "what_you_understood",
+      "concepts_covered",
+      "missing_concepts",
+      "feedback",
+      "suggested_action",
+      "reasoning_quality",
+      "confidence"
+    ]
+  }
+]
