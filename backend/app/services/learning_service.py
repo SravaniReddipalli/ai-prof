@@ -163,40 +163,58 @@ class LearningService:
         created_questions = []
         raw_questions = quiz_payload.questions if quiz_payload.questions else []
         
-        # Fallback if empty
+        # Dynamic fallback if empty (derive from target concepts, never hardcoded)
         if not raw_questions:
+            c0 = concept_names[0] if concept_names else "this concept"
+            c1 = concept_names[1] if len(concept_names) > 1 else f"{c0} Mechanics"
+            c2 = concept_names[2] if len(concept_names) > 2 else f"{c0} Trade-offs"
             raw_questions = [
                 {
                     "type": "mcq",
-                    "question": f"What is the primary role of {concept_names[0] if concept_names else 'this concept'}?",
-                    "options": ["To ensure consistency and structure", "To increase redundant storage", "To bypass memory limits", "None of the above"],
-                    "correct_answer": "To ensure consistency and structure",
-                    "explanation": "Proper structure and normalization prevent redundancy and enforce integrity.",
+                    "question": f"Which of the following best defines the primary purpose of {c0}?",
+                    "options": [
+                        f"To establish structural integrity, consistency, and predictable behavior in {c0}",
+                        f"To disable operational constraints and bypass structural validation",
+                        f"To increase redundant unindexed storage overhead without validation",
+                        f"To eliminate all computational verification steps unconditionally",
+                    ],
+                    "correct_answer": f"To establish structural integrity, consistency, and predictable behavior in {c0}",
+                    "explanation": f"{c0} enforces structural invariants and predictable behavior.",
                     "difficulty": primary_diff,
                 },
                 {
                     "type": "mcq",
-                    "question": "Which trade-off is typically associated with high concurrency?",
-                    "options": ["Increased contention and lock overhead", "Zero CPU usage", "Automatic memory expansion", "Infinite throughput"],
-                    "correct_answer": "Increased contention and lock overhead",
-                    "explanation": "High concurrency often involves locking and isolation overhead.",
+                    "question": f"When applying {c1}, which operational consideration is essential?",
+                    "options": [
+                        f"Ensuring reliable state transitions and handling boundary conditions correctly",
+                        f"Assuming unlimited memory and instantaneous zero-cost execution",
+                        f"Removing all dependency tracking and isolation boundaries",
+                        f"Ignoring conflicting updates and concurrency trade-offs",
+                    ],
+                    "correct_answer": f"Ensuring reliable state transitions and handling boundary conditions correctly",
+                    "explanation": f"Proper execution of {c1} requires managing state transitions and edge conditions.",
                     "difficulty": primary_diff,
                 },
                 {
                     "type": "mcq",
-                    "question": "How do index structures optimize retrieval performance?",
-                    "options": ["By reducing the number of disk I/O reads", "By deleting unused records", "By preventing table updates", "By encrypting database pages"],
-                    "correct_answer": "By reducing the number of disk I/O reads",
-                    "explanation": "Indexes like B-Trees allow logarithmic search times instead of full table scans.",
+                    "question": f"What key trade-off is typically balanced when designing or optimizing {c2}?",
+                    "options": [
+                        f"Balancing throughput and latency against correctness and integrity constraints",
+                        f"Eliminating all algorithmic complexity regardless of system scale",
+                        f"Replacing systematic verification with random sampling",
+                        f"Discarding intermediate state to minimize correctness requirements",
+                    ],
+                    "correct_answer": f"Balancing throughput and latency against correctness and integrity constraints",
+                    "explanation": f"Optimization for {c2} balances performance efficiency against correctness and stability guarantees.",
                     "difficulty": primary_diff,
                 },
                 {
                     "type": "open_ended",
-                    "question": f"Explain in your own words how {concept_names[0] if concept_names else 'this system'} functions and what problems it solves.",
-                    "correct_answer": "Comprehensive explanation covering definition, mechanics, and practical benefits.",
-                    "rubric": "Learner must address: definition, operational mechanism, and real-world benefit.",
+                    "question": f"Explain in your own words how {c0} functions, the primary problem it resolves, and one key trade-off or challenge in practice.",
+                    "correct_answer": f"A comprehensive explanation explaining the core operational mechanism of {c0}, the problem it solves, and practical trade-offs.",
+                    "rubric": f"Learner must address: (1) definition and objective of {c0}, (2) underlying mechanism, and (3) real-world trade-offs or constraints.",
                     "difficulty": primary_diff,
-                }
+                },
             ]
 
         # Associate with concept

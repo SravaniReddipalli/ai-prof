@@ -24,29 +24,86 @@ def compute_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     return (input_tokens * rates["input"]) + (output_tokens * rates["output"])
 
 def generate_mock_embedding(text: str, dim: int = 1536) -> List[float]:
-    """Generates a deterministic pseudo-embedding vector based on text hash for tests/dev."""
-    vec = []
-    # Seed with SHA256 of text
-    h = hashlib.sha256(text.encode("utf-8")).digest()
-    for i in range(dim):
-        byte_val = h[i % len(h)]
-        val = math.sin((i + 1) * (byte_val + 1))
-        vec.append(val)
-    # L2 normalize
-    norm = math.sqrt(sum(x * x for x in vec)) or 1.0
-    return [x / norm for x in vec]
+    """
+    Deterministic lexical/term-feature retrieval embedding (1536 dimensions, L2-normalized).
+
+    NOTE: This is NOT a true semantic embedding (it does not capture latent semantic relationships
+    absent term/subword overlap). It is a deterministic lexical/term-feature representation utilizing
+    tokenization, subword character n-grams, and signed feature hashing (Weinberger et al.)
+    designed to improve concept/keyword overlap and rank relevant document chunks in PostgreSQL/pgvector
+    without external network calls.
+    """
+    if not text or not text.strip():
+        vec = [0.0] * dim
+        vec[0] = 1.0
+        return vec
+
+    vec = [0.0] * dim
+    clean_text = text.lower()
+    words = re.findall(r"\b[a-z0-9_\-\+]+\b", clean_text)
+
+    stopwords = {
+        "the", "a", "an", "is", "are", "was", "were", "and", "or", "in", "on",
+        "at", "to", "for", "with", "by", "of", "it", "this", "that", "as", "be",
+        "from", "into", "then", "there", "their", "so", "such", "than", "too"
+    }
+
+    features = []
+    # 1. Word unigrams & character n-grams
+    for w in words:
+        if len(w) >= 2:
+            wt = 0.2 if w in stopwords else 1.0
+            features.append((f"w:{w}", wt))
+            if len(w) >= 4 and w not in stopwords:
+                for n in (3, 4):
+                    for idx in range(len(w) - n + 1):
+                        features.append((f"c:{w[idx:idx+n]}", 0.3))
+
+    # 2. Word bigrams for phrasal overlap
+    for idx in range(len(words) - 1):
+        w1, w2 = words[idx], words[idx + 1]
+        if w1 not in stopwords or w2 not in stopwords:
+            features.append((f"bi:{w1}_{w2}", 0.7))
+
+    if not features:
+        features = [(f"ch:{ch}", 1.0) for ch in clean_text if not ch.isspace()]
+
+    # Signed feature hashing into `dim` buckets
+    for feat_str, wt in features:
+        h = hashlib.sha256(feat_str.encode("utf-8")).digest()
+        bucket = int.from_bytes(h[:4], "little") % dim
+        # Signed hash (+1 or -1) to achieve unbiased expectation: E[dot_product] = 0 for disjoint sets
+        sign = 1.0 if (h[4] & 1) == 0 else -1.0
+        vec[bucket] += sign * wt
+
+    # L2-normalize vector
+    norm = math.sqrt(sum(x * x for x in vec))
+    if norm > 0.0:
+        return [round(x / norm, 6) for x in vec]
+
+    vec[0] = 1.0
+    return vec
 
 
 class AIService:
     def __init__(self):
+        self.provider = getattr(settings, "AI_PROVIDER", "mock").lower()
         self.api_key = settings.OPENAI_API_KEY
         self.client = None
-        if self.api_key:
-            try:
-                from openai import OpenAI
-                self.client = OpenAI(api_key=self.api_key)
-            except Exception as e:
-                logger.error(f"Failed to initialize OpenAI client: {e}")
+
+        if self.provider == "openai":
+            if self.api_key:
+                try:
+                    from openai import OpenAI
+                    self.client = OpenAI(api_key=self.api_key)
+                    logger.info("AIService initialized with provider 'openai'.")
+                except Exception as e:
+                    logger.error(f"Failed to initialize OpenAI client: {e}")
+            else:
+                logger.warning("AI_PROVIDER is 'openai' but OPENAI_API_KEY is empty. Operating in fallback mock mode.")
+        else:
+            # Explicit AI_PROVIDER=mock mode: guarantees zero external OpenAI network calls even if OPENAI_API_KEY is present
+            logger.info("AIService initialized with deterministic provider 'mock' (zero external API calls).")
 
     def log_usage(
         self,
@@ -156,10 +213,58 @@ class AIService:
             logger.error(f"OpenAI chat completion error: {e}")
             raise e
 
+    def _extract_mock_concepts(self, text: str) -> str:
+        """Extracts 3-5 representative concept names from text dynamically without hardcoding."""
+        candidates = []
+        # 1. Look for markdown headings or numbered sections
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            header_match = re.match(r"^(?:#+\s*|\d+[\.\)]\s*)([A-Za-z0-9\s\-&]+)", line)
+            if header_match:
+                cand = header_match.group(1).strip()
+                if 3 < len(cand) < 45 and cand not in candidates:
+                    candidates.append(cand)
+
+        # 2. Look for prominent multi-word capitalized phrases
+        stopwords_lead = {"First", "Second", "Third", "The", "This", "That", "When", "Where", "These", "Those", "Extract"}
+        phrase_matches = re.findall(r"\b[A-Z][a-zA-Z0-9\-]*(?:\s+[A-Z][a-zA-Z0-9\-]*)+\b", text)
+        for p in phrase_matches:
+            p_clean = p.strip()
+            if 3 < len(p_clean) < 45 and p_clean not in candidates:
+                first_w = p_clean.split()[0]
+                if first_w in stopwords_lead and len(p_clean.split()) <= 2:
+                    continue
+                candidates.append(p_clean)
+
+        # 3. Fallback to salient capitalized single words
+        if len(candidates) < 3:
+            ignore_words = {"Page", "Source", "Project", "Chapter", "Section", "Title", "Material", "Extract"}
+            words = re.findall(r"\b[A-Z][a-zA-Z]{3,}\b", text)
+            for w in words:
+                if w not in candidates and w not in ignore_words:
+                    candidates.append(w)
+                if len(candidates) >= 5:
+                    break
+
+        if not candidates:
+            candidates = ["Foundational Concepts", "Core Mechanics", "Practical Applications"]
+
+        return ", ".join(candidates[:5])
+
     def _mock_chat_response(self, system_prompt: str, messages: List[Dict[str, str]]) -> str:
         """Generic evidence-grounded chat response covering all substantive parts of the user query."""
-        canonical_unsupported = "I couldn't find enough information about that in the current Project materials to answer reliably."
         last_msg = messages[-1]["content"].strip() if messages else ""
+
+        # Concept extraction handler
+        if "concept extractor" in system_prompt.lower() or "extract 3-6 core concept" in last_msg.lower():
+            sample_text = last_msg
+            if "Extract 3-6 core concept names from this material:\n" in last_msg:
+                sample_text = last_msg.split("Extract 3-6 core concept names from this material:\n", 1)[1]
+            return self._extract_mock_concepts(sample_text)
+
+        canonical_unsupported = "I couldn't find enough information about that in the current Project materials to answer reliably."
         if not last_msg:
             return canonical_unsupported
 
@@ -325,6 +430,79 @@ class AIService:
             logger.warning(f"OpenAI structured call failed or invalid, falling back: {e}")
             return self._mock_structured_data(response_schema, system_prompt=system_prompt, user_prompt=user_prompt)
 
+    def _generate_mock_quiz_payload(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
+        """Dynamically generates 3 MCQs and 1 open-ended question based on prompt concepts without hardcoding."""
+        concepts = []
+        c_match = re.search(r"Target Concepts:\s*([^\n]+)", system_prompt, re.IGNORECASE)
+        if c_match:
+            concepts = [c.strip() for c in c_match.group(1).split(",") if c.strip()]
+
+        d_match = re.search(r"Difficulty Level:\s*([a-zA-Z]+)", system_prompt, re.IGNORECASE)
+        difficulty = d_match.group(1).lower() if d_match else "medium"
+
+        if not concepts:
+            # Try extracting concepts from user_prompt
+            concepts = [w.strip() for w in re.findall(r"\b[A-Z][a-zA-Z0-9\-]*(?:\s+[A-Z][a-zA-Z0-9\-]*)+\b", user_prompt) if len(w) > 3]
+
+        if not concepts:
+            concepts = ["Core Foundations", "Key Principles", "Practical Implementation"]
+
+        c0 = concepts[0]
+        c1 = concepts[1] if len(concepts) > 1 else f"{c0} Mechanics"
+        c2 = concepts[2] if len(concepts) > 2 else f"{c0} Optimization"
+
+        questions = [
+            {
+                "type": "mcq",
+                "question": f"Which of the following best defines the primary purpose of {c0}?",
+                "options": [
+                    f"To establish structural integrity, consistency, and predictable behavior in {c0}",
+                    f"To disable operational constraints and bypass structural validation",
+                    f"To increase redundant unindexed storage overhead without validation",
+                    f"To eliminate all computational verification steps unconditionally",
+                ],
+                "correct_answer": f"To establish structural integrity, consistency, and predictable behavior in {c0}",
+                "explanation": f"{c0} is designed to enforce structural consistency, prevent anomalies, and ensure predictable behavior.",
+                "difficulty": difficulty,
+            },
+            {
+                "type": "mcq",
+                "question": f"When applying {c1}, which operational consideration is essential?",
+                "options": [
+                    f"Ensuring reliable state transitions and handling boundary conditions correctly",
+                    f"Assuming unlimited memory and instantaneous zero-cost execution",
+                    f"Removing all dependency tracking and isolation boundaries",
+                    f"Ignoring conflicting updates and concurrency trade-offs",
+                ],
+                "correct_answer": f"Ensuring reliable state transitions and handling boundary conditions correctly",
+                "explanation": f"Proper execution of {c1} requires managing state transitions, invariants, and edge conditions.",
+                "difficulty": difficulty,
+            },
+            {
+                "type": "mcq",
+                "question": f"What key trade-off is typically balanced when designing or optimizing {c2}?",
+                "options": [
+                    f"Balancing throughput and latency against correctness and integrity constraints",
+                    f"Eliminating all algorithmic complexity regardless of system scale",
+                    f"Replacing systematic verification with random sampling",
+                    f"Discarding intermediate state to minimize correctness requirements",
+                ],
+                "correct_answer": f"Balancing throughput and latency against correctness and integrity constraints",
+                "explanation": f"System optimization for {c2} invariably balances performance efficiency with correctness and stability guarantees.",
+                "difficulty": difficulty,
+            },
+            {
+                "type": "open_ended",
+                "question": f"Explain in your own words how {c0} functions, the primary problem it resolves, and one key trade-off or challenge in practice.",
+                "correct_answer": f"A comprehensive explanation explaining the core operational mechanism of {c0}, the problem it solves, and practical trade-offs.",
+                "rubric": f"Learner must address: (1) definition and objective of {c0}, (2) underlying mechanism, and (3) real-world trade-offs or constraints.",
+                "difficulty": difficulty,
+            },
+        ]
+
+        title = f"Adaptive Quiz: {', '.join(concepts[:2])}"
+        return {"title": title, "difficulty": difficulty, "questions": questions}
+
     def _mock_structured_data(
         self,
         response_schema: Type[BaseModel],
@@ -333,6 +511,10 @@ class AIService:
     ) -> BaseModel:
         """Provides deterministic schema-compliant mock objects for dev/testing."""
         name = response_schema.__name__
+        if "GeneratedQuizPayload" in name:
+            quiz_dict = self._generate_mock_quiz_payload(system_prompt=system_prompt, user_prompt=user_prompt)
+            return response_schema.model_validate(quiz_dict)
+
         if "OpenEndedEvaluation" in name:
             from app.schemas.schemas import OpenEndedEvaluation
 
